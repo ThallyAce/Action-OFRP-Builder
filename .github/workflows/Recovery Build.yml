@@ -27,6 +27,14 @@ on:
         description: 'COMMON_TREE_URL'
         required: false
         default: ''
+      COMMON_TREE_BRANCH:
+        description: 'COMMON_TREE_BRANCH'
+        required: false
+        default: 'fox_9.0'
+      COMMON_TREE_PATH:
+        description: 'COMMON_TREE_PATH (e.g., device/tecno/common)'
+        required: false
+        default: ''
 
 env:
   # Forces JS actions to run on Node 24, silencing the Node 20 warning
@@ -34,28 +42,67 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Pinned to avoid the Ubuntu 26 migration notice
     steps:
-      # Use a version of checkout that supports Node 24
+      # Updated to v5 to support Node 24 natively
       - name: Checkout
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v5
 
-      # Corrected Java setup (v4, with distribution specified)
+      # Updated to v5 to eliminate the Java deprecation warning
       - name: Set up JDK 11
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '11'
 
-      # --- Your build steps go here ---
-      # Example: Sync sources
-      - name: Sync Sources
+      - name: Install Dependencies
         run: |
-          # Insert your sync commands here using ${{ github.event.inputs.SYNC_URL }} etc.
-          echo "Syncing..."
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
 
-      # Example: Build
+      - name: Setup Repo and Sync Sources
+        run: |
+          # Create bin directory for repo
+          mkdir -p ~/bin
+          # Download repo tool
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          export PATH=~/bin:$PATH
+          
+          # Init repo (using your inputs)
+          repo init --depth=1 -u ${{ github.event.inputs.SYNC_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+          
+          # Sync the sources
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: Clone Device Trees
+        run: |
+          # Clone main device tree
+          git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ${{ github.event.inputs.DEVICE_PATH }}
+          
+          # Clone common tree if the URL is provided
+          if [ -n "${{ github.event.inputs.COMMON_TREE_URL }}" ] && [ -n "${{ github.event.inputs.COMMON_TREE_PATH }}" ]; then
+            git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.COMMON_TREE_BRANCH }} ${{ github.event.inputs.COMMON_TREE_PATH }}
+          fi
+
       - name: Build Recovery
         run: |
-          # Insert your lunch/make commands here
-          echo "Building..."
+          export PATH=~/bin:$PATH
+          export ALLOW_MISSING_DEPENDENCIES=true
+          
+          # Initialize the build environment
+          source build/envsetup.sh
+          
+          # Set the lunch target (Assuming 'fox_lc6-eng' based on your device tree name)
+          lunch fox_lc6-eng
+          
+          # Build the recovery image
+          mka recoveryimage
+
+      - name: Upload Recovery Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeFox-Recovery-Image
+          # The output path is usually out/target/product/<device_codename>/
+          path: out/target/product/lc6/recovery.img
+          if-no-files-found: error
